@@ -21,9 +21,10 @@ local Config = {
     AimBot = {
         Enabled      = false,
         Smooth       = 0.18,      -- плавность (0.05 быстро, 0.4 медленно)
-        FOV          = 300,       -- радиус захвата (пиксели)
+        FOV          = 150,       -- радиус захвата (пиксели)
         HitPart      = "Head",    -- "Head" или "HumanoidRootPart"
         ShowFOV      = true,
+        SilentAim    = true,      -- пули летят в цель без поворота камеры
     },
     ESP = {
         Enabled      = false,
@@ -657,13 +658,64 @@ end)
 --               АИМБОТ ЛОГИКА
 -- ══════════════════════════════════════════
 
+-- ══════════════════════════════════════════
+--   SILENT AIM — пули летят в цель сами
+-- ══════════════════════════════════════════
+
+local silentTarget = nil
+local oldnamecall  = nil
+
+-- Хукаем namecall для перехвата Raycast (Silent Aim)
+if hookmetamethod then
+    oldnamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+        local args = {...}
+
+        if Config.AimBot.Enabled and Config.AimBot.SilentAim and silentTarget then
+            if method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList"
+            or method == "FindPartOnRayWithWhitelist" or method == "Raycast" then
+                local char = GetCharacter(silentTarget)
+                local part = char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
+                if part then
+                    if method == "Raycast" then
+                        local origin = args[1]
+                        if origin then
+                            args[2] = (part.Position - origin).Unit * (args[2] and args[2].Magnitude or 1000)
+                        end
+                    else
+                        local ray = args[1]
+                        if ray then
+                            local origin = ray.Origin
+                            local dir    = (part.Position - origin).Unit * ray.Direction.Magnitude
+                            args[1]      = Ray.new(origin, dir)
+                        end
+                    end
+                end
+            end
+        end
+
+        return oldnamecall(self, unpack(args))
+    end)
+end
+
 local function UpdateAimBot()
     -- FOV круг
     local vpSize = Camera.ViewportSize
-    FOVCircle.Position  = Vector2.new(vpSize.X / 2, vpSize.Y / 2)
-    FOVCircle.Visible   = Config.AimBot.Enabled and Config.AimBot.ShowFOV
+    FOVCircle.Position = Vector2.new(vpSize.X / 2, vpSize.Y / 2)
+    FOVCircle.Visible  = Config.AimBot.Enabled and Config.AimBot.ShowFOV
 
-    if not Config.AimBot.Enabled then return end
+    if not Config.AimBot.Enabled then
+        silentTarget = nil
+        return
+    end
+
+    -- Silent Aim — обновляем цель каждый кадр
+    if Config.AimBot.SilentAim then
+        silentTarget = GetClosestPlayerToMouse()
+        return  -- камера не двигается, хук сам направит пули
+    end
+
+    -- Обычный аим (если SilentAim выключен)
     if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then return end
 
     local target = GetClosestPlayerToMouse()
@@ -678,15 +730,11 @@ local function UpdateAimBot()
     local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
     if not onScreen then return end
 
-    -- Плавный аим
     local currentX, currentY = Mouse.X, Mouse.Y
-    local targetX, targetY   = screenPos.X, screenPos.Y
     local smooth             = Config.AimBot.Smooth
+    local newX = currentX + (screenPos.X - currentX) * smooth
+    local newY = currentY + (screenPos.Y - currentY) * smooth
 
-    local newX = currentX + (targetX - currentX) * smooth
-    local newY = currentY + (targetY - currentY) * smooth
-
-    -- mousemoverel работает в большинстве эксплойт-клиентов
     if mousemoverel then
         mousemoverel(newX - currentX, newY - currentY)
     elseif Mouse.Move then
